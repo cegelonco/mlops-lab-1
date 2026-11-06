@@ -1,20 +1,13 @@
 import os
 from io import BytesIO
+from typing import Annotated
 
-# Our Lab 2 model was saved using pickle.
-# This is safe here because we are loading our own trusted local model.
-os.environ.setdefault("MLFLOW_ALLOW_PICKLE_DESERIALIZATION", "true")
-
-import mlflow
 import numpy as np
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from PIL import Image
 from torchvision import transforms
 
-
-# --------------------------------------------------
-# MLflow configuration
-# --------------------------------------------------
+import mlflow
 
 MLFLOW_TRACKING_URI = os.getenv(
     "MLFLOW_TRACKING_URI",
@@ -25,17 +18,8 @@ mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
 
 MODEL_URI = "models:/food11@champion"
 
-print(f"Loading model from: {MODEL_URI}")
-print(f"MLflow server: {MLFLOW_TRACKING_URI}")
+model = None
 
-model = mlflow.pyfunc.load_model(MODEL_URI)
-
-print("Model loaded successfully.")
-
-
-# --------------------------------------------------
-# FastAPI application
-# --------------------------------------------------
 
 app = FastAPI(
     title="Food-11 API",
@@ -43,7 +27,6 @@ app = FastAPI(
 )
 
 
-# Same class order used during training
 CLASS_NAMES = [
     "Bread",
     "Dairy product",
@@ -59,7 +42,6 @@ CLASS_NAMES = [
 ]
 
 
-# Same preprocessing used during training
 transform = transforms.Compose(
     [
         transforms.Resize((128, 128)),
@@ -72,13 +54,36 @@ transform = transforms.Compose(
 )
 
 
+@app.on_event("startup")
+def load_model():
+    global model
+
+    if os.environ.get("SKIP_MODEL"):
+        return
+
+    print(f"Loading model from: {MODEL_URI}")
+    print(f"MLflow server: {MLFLOW_TRACKING_URI}")
+
+    model = mlflow.pyfunc.load_model(MODEL_URI)
+
+    print("Model loaded successfully.")
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
 
 @app.post("/predict")
-async def predict(file: UploadFile = File(...)):
+async def predict(
+    file: Annotated[UploadFile, File()],
+):
+    if model is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Model is not loaded",
+        )
+
     try:
         contents = await file.read()
 
@@ -86,20 +91,16 @@ async def predict(file: UploadFile = File(...)):
             BytesIO(contents)
         ).convert("RGB")
 
-    except Exception:
+    except (OSError, ValueError) as error:
         raise HTTPException(
             status_code=400,
             detail="Invalid image file",
-        )
+        ) from error
 
-    # Convert image to the format expected by ResNet18
     tensor = transform(image)
 
-    # Add batch dimension:
-    # [3, 128, 128] -> [1, 3, 128, 128]
     batch = tensor.unsqueeze(0).numpy()
 
-    # Run inference through the MLflow pyfunc model
     predictions = model.predict(batch)
 
     logits = np.asarray(predictions)
@@ -107,14 +108,22 @@ async def predict(file: UploadFile = File(...)):
     if logits.ndim == 1:
         logits = logits.reshape(1, -1)
 
-    # Convert model scores into probabilities
     exp_scores = np.exp(
-        logits - np.max(logits, axis=1, keepdims=True)
+        logits
+        - np.max(
+            logits,
+            axis=1,
+            keepdims=True,
+        )
     )
 
     probabilities = (
         exp_scores
-        / np.sum(exp_scores, axis=1, keepdims=True)
+        / np.sum(
+            exp_scores,
+            axis=1,
+            keepdims=True,
+        )
     )
 
     predicted_index = int(

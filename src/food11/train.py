@@ -1,14 +1,14 @@
 import argparse
 from pathlib import Path
 
-import mlflow
 import mlflow.pytorch
 import torch
-import torch.nn as nn
+from torch import nn
 from torch.utils.data import DataLoader
 from torchvision import datasets, models, transforms
 from torchvision.models import ResNet18_Weights
 
+import mlflow
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_ROOT = PROJECT_ROOT / "data"
