@@ -226,7 +226,7 @@ def main():
     )
 
     mlflow.set_experiment(
-        "food11"
+        "food11_lab5"
     )
 
     device = torch.device(
